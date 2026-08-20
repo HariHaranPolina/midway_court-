@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Midway Court Split</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Midway Court Split</h1>
+      <p>Book a court, invite players, split the cost, and track payments.</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>Create booking</h2>
+      <form id="booking-form" class="grid-form">
+        <label>Court
+          <select id="court_name" required>
+            <option>Pickleball Court 1</option>
+            <option>Pickleball Court 2</option>
+            <option>Pickleball Court 3</option>
+            <option>Pickleball Court 4</option>
+            <option>Pickleball Court 5</option>
+            <option>Pickleball Court 6</option>
+          </select>
+        </label>
+        <label>Date<input id="booking_date" type="date" required /></label>
+        <label>Start<input id="start_time" type="time" required /></label>
+        <label>End<input id="end_time" type="time" required /></label>
+        <label>Booked by<input id="organizer_name" required placeholder="Hari" /></label>
+        <label>Email<input id="organizer_email" type="email" placeholder="optional" /></label>
+        <label>Total paid for court ($)<input id="total_cost" type="number" min="0" step="0.01" required placeholder="40.00" /></label>
+        <label>Max players<input id="max_players" type="number" min="1" max="20" value="6" required /></label>
+        <label class="wide">Notes<input id="notes" placeholder="optional" /></label>
+        <button type="submit">Create booking</button>
+      </form>
+      <p id="booking-msg" class="message"></p>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Bookings</h2>
+        <button id="refresh-btn" class="secondary">Refresh</button>
+      </div>
+      <div id="bookings" class="cards"></div>
+    </section>
+  </main>
+
+  <template id="booking-template">
+    <article class="booking-card">
+      <div class="booking-top">
+        <div>
+          <h3 class="court"></h3>
+          <p class="when"></p>
+          <p class="organizer"></p>
+        </div>
+        <div class="totals">
+          <strong class="cost"></strong>
+          <span class="remaining"></span>
+        </div>
+      </div>
+      <div class="split-line"></div>
+      <div class="players"></div>
+
+      <div class="actions">
+        <form class="join-form inline-form">
+          <input name="name" placeholder="Player name" required />
+          <input name="amount" type="number" min="0" step="0.01" placeholder="Amount paid ($)" required />
+          <button>Join court</button>
+        </form>
+        <form class="pay-form inline-form">
+          <select name="participant_id" required></select>
+          <input name="amount" type="number" step="0.01" min="0.01" placeholder="Amount" required />
+          <select name="method">
+            <option value="Zelle">Zelle</option>
+            <option value="Venmo">Venmo</option>
+            <option value="Cash">Cash</option>
+            <option value="Apple Cash">Apple Cash</option>
+            <option value="manual">Other</option>
+          </select>
+          <button>Record payment</button>
+        </form>
+      </div>
+      <p class="card-msg message"></p>
+    </article>
+  </template>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

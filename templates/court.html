@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Court Players & Balance</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header>
+    <h1 id="court-title">Court</h1>
+    <p id="court-subtitle">Players, payments and balances</p>
+  </header>
+  <main>
+    <a class="back-link" href="/">← Players</a>
+
+    <section class="panel court-summary">
+      <div><span>Total court cost</span><strong id="court-cost">$0.00</strong></div>
+      <div><span>Players</span><strong id="court-count">0</strong></div>
+      <div><span>Each share</span><strong id="court-share">$0.00</strong></div>
+      <div><span>Holder to receive</span><strong id="court-receive">$0.00</strong></div>
+    </section>
+
+    <section class="panel">
+      <h2>Add player to this court</h2>
+      <form id="join-form" class="court-add-form">
+        <label>Player<select id="join_player" required></select></label>
+        <label>Amount paid now ($)<input id="initial_payment" type="number" min="0" step="0.01" value="0" /></label>
+        <button type="submit">Add to court</button>
+      </form>
+      <p id="join-msg" class="message"></p>
+    </section>
+
+    <section>
+      <h2>Court players</h2>
+      <div id="court-players" class="court-player-list"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Record another payment</h2>
+      <form id="payment-form" class="payment-form">
+        <select id="pay_player" required></select>
+        <input id="pay_amount" type="number" step="0.01" min="0.01" placeholder="Amount" required />
+        <select id="pay_method"><option>Zelle</option><option>Venmo</option><option>Cash</option><option>Apple Cash</option><option>Other</option></select>
+        <button type="submit">Record payment</button>
+      </form>
+      <p id="pay-msg" class="message"></p>
+    </section>
+  </main>
+  <script src="/static/court.js"></script>
+</body>
+</html>
