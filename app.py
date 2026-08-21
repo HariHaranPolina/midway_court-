@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 import sqlite3
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
@@ -15,6 +16,12 @@ DB_PATH = BASE_DIR / "midway_court.db"
 
 app = FastAPI(title="Midway Court Split", version="2.0.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+
+APP_TIMEZONE = ZoneInfo("America/New_York")
+
+def _today_str() -> str:
+    return datetime.now(APP_TIMEZONE).date().isoformat()
+
 
 
 def get_conn() -> sqlite3.Connection:
@@ -317,8 +324,8 @@ def list_players() -> list[dict]:
         result = []
         for p in rows:
             held = conn.execute(
-                "SELECT id, court_name, booking_date, start_time, end_time FROM bookings WHERE holder_player_id=? ORDER BY booking_date DESC, start_time DESC",
-                (p["id"],),
+                "SELECT id, court_name, booking_date, start_time, end_time FROM bookings WHERE holder_player_id=? AND booking_date=? ORDER BY start_time ASC",
+                (p["id"], _today_str()),
             ).fetchall()
             result.append({
                 "id": p["id"],
@@ -368,7 +375,10 @@ def add_player_funds(player_id: int, payload: FundsCreate) -> dict:
 @app.get("/api/bookings")
 def list_bookings() -> list[dict]:
     with get_conn() as conn:
-        ids = conn.execute("SELECT id FROM bookings ORDER BY booking_date ASC, start_time ASC, id DESC").fetchall()
+        ids = conn.execute(
+            "SELECT id FROM bookings WHERE booking_date=? ORDER BY start_time ASC, id DESC",
+            (_today_str(),),
+        ).fetchall()
         return [_booking_summary(conn, row["id"]) for row in ids]
 
 
