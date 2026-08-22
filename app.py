@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import os
 import sqlite3
+from contextlib import contextmanager
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -11,8 +13,16 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:
+    psycopg = None
+    dict_row = None
+
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "midway_court.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 app = FastAPI(title="Midway Court Split", version="2.0.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -24,29 +34,152 @@ def _today_str() -> str:
 
 
 
-def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+class DBResult:
+    def __init__(self, cursor, lastrowid=None):
+        self.cursor = cursor
+        self.lastrowid = lastrowid
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchall(self):
+        return self.cursor.fetchall()
+
+    def __iter__(self):
+        return iter(self.cursor)
 
 
-def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})"))
+class DBConn:
+    def __init__(self, raw, is_postgres: bool):
+        self.raw = raw
+        self.is_postgres = is_postgres
+
+    def execute(self, sql: str, params=()):
+        if self.is_postgres:
+            translated = sql.replace("?", "%s").replace(
+                "ORDER BY name COLLATE NOCASE", "ORDER BY lower(name)"
+            )
+            stripped = translated.lstrip().upper()
+            wants_id = stripped.startswith("INSERT INTO ") and " RETURNING " not in stripped
+            if wants_id:
+                translated = translated.rstrip().rstrip(";") + " RETURNING id"
+            cur = self.raw.cursor()
+            cur.execute(translated, params)
+            lastrowid = None
+            if wants_id:
+                row = cur.fetchone()
+                if row is not None:
+                    lastrowid = row["id"] if isinstance(row, dict) else row[0]
+            return DBResult(cur, lastrowid)
+        cur = self.raw.execute(sql, params)
+        return DBResult(cur, getattr(cur, "lastrowid", None))
+
+    def commit(self):
+        self.raw.commit()
+
+    def rollback(self):
+        self.raw.rollback()
+
+    def close(self):
+        self.raw.close()
+
+
+@contextmanager
+def get_conn():
+    if DATABASE_URL:
+        if psycopg is None:
+            raise RuntimeError("DATABASE_URL is set but psycopg is not installed")
+        raw = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        conn = DBConn(raw, True)
+    else:
+        raw = sqlite3.connect(DB_PATH)
+        raw.row_factory = sqlite3.Row
+        raw.execute("PRAGMA foreign_keys = ON")
+        conn = DBConn(raw, False)
+
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+DB_INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
+if psycopg is not None:
+    DB_INTEGRITY_ERRORS = DB_INTEGRITY_ERRORS + (psycopg.IntegrityError,)
+
+
+def _sqlite_column_exists(conn: DBConn, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
 
 
 def init_db() -> None:
     with get_conn() as conn:
-        conn.executescript(
-            """
+        if conn.is_postgres:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS players (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    email TEXT,
+                    balance DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS players_name_lower_uq ON players (lower(name))")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS bookings (
+                    id SERIAL PRIMARY KEY,
+                    court_name TEXT NOT NULL,
+                    booking_date TEXT NOT NULL,
+                    start_time TEXT NOT NULL,
+                    end_time TEXT NOT NULL,
+                    organizer_name TEXT NOT NULL,
+                    organizer_email TEXT,
+                    total_cost DOUBLE PRECISION NOT NULL CHECK(total_cost >= 0),
+                    max_players INTEGER NOT NULL DEFAULT 6 CHECK(max_players >= 1),
+                    notes TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    holder_player_id INTEGER REFERENCES players(id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS participants (
+                    id SERIAL PRIMARY KEY,
+                    booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    email TEXT,
+                    is_organizer INTEGER NOT NULL DEFAULT 0,
+                    joined_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    player_id INTEGER REFERENCES players(id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS payments (
+                    id SERIAL PRIMARY KEY,
+                    booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+                    participant_id INTEGER NOT NULL REFERENCES participants(id) ON DELETE CASCADE,
+                    amount DOUBLE PRECISION NOT NULL CHECK(amount > 0),
+                    method TEXT NOT NULL DEFAULT 'manual',
+                    note TEXT,
+                    paid_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+            return
+
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS players (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 email TEXT,
                 balance REAL NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS bookings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 court_name TEXT NOT NULL,
@@ -58,9 +191,11 @@ def init_db() -> None:
                 total_cost REAL NOT NULL CHECK(total_cost >= 0),
                 max_players INTEGER NOT NULL DEFAULT 6 CHECK(max_players >= 1),
                 notes TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                holder_player_id INTEGER
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS participants (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 booking_id INTEGER NOT NULL,
@@ -68,9 +203,11 @@ def init_db() -> None:
                 email TEXT,
                 is_organizer INTEGER NOT NULL DEFAULT 0,
                 joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                player_id INTEGER,
                 FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE
-            );
-
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 booking_id INTEGER NOT NULL,
@@ -81,16 +218,13 @@ def init_db() -> None:
                 paid_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE,
                 FOREIGN KEY (participant_id) REFERENCES participants(id) ON DELETE CASCADE
-            );
-            """
-        )
-
-        if not _column_exists(conn, "bookings", "holder_player_id"):
+            )
+        """)
+        if not _sqlite_column_exists(conn, "bookings", "holder_player_id"):
             conn.execute("ALTER TABLE bookings ADD COLUMN holder_player_id INTEGER")
-        if not _column_exists(conn, "participants", "player_id"):
+        if not _sqlite_column_exists(conn, "participants", "player_id"):
             conn.execute("ALTER TABLE participants ADD COLUMN player_id INTEGER")
 
-        # Link older bookings/participants to roster players when possible.
         old_people = conn.execute(
             "SELECT DISTINCT organizer_name, organizer_email FROM bookings WHERE organizer_name IS NOT NULL"
         ).fetchall()
@@ -103,25 +237,20 @@ def init_db() -> None:
                     "INSERT OR IGNORE INTO players(name, email, balance) VALUES (?, ?, 0)",
                     (row["organizer_name"], row["organizer_email"]),
                 )
-
-        conn.execute(
-            """
+        conn.execute("""
             UPDATE bookings
             SET holder_player_id = (
                 SELECT p.id FROM players p WHERE lower(p.name)=lower(bookings.organizer_name) LIMIT 1
             )
             WHERE holder_player_id IS NULL
-            """
-        )
-        conn.execute(
-            """
+        """)
+        conn.execute("""
             UPDATE participants
             SET player_id = (
                 SELECT p.id FROM players p WHERE lower(p.name)=lower(participants.name) LIMIT 1
             )
             WHERE player_id IS NULL
-            """
-        )
+        """)
         conn.commit()
 
 
@@ -355,7 +484,7 @@ def create_player(payload: PlayerCreate) -> dict:
                 (payload.name.strip(), payload.email, payload.starting_balance),
             )
             conn.commit()
-        except sqlite3.IntegrityError:
+        except DB_INTEGRITY_ERRORS:
             raise HTTPException(status_code=409, detail="Player already exists")
         p = conn.execute("SELECT * FROM players WHERE id=?", (cur.lastrowid,)).fetchone()
         return {"id": p["id"], "name": p["name"], "email": p["email"], "balance": round(float(p["balance"]), 2)}
